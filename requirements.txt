@@ -1,0 +1,4 @@
+flask
+pypdf
+werkzeug
+pandas
