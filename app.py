@@ -6,8 +6,11 @@ import re
 import math
 from collections import Counter
 
+# Define base directory
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['UPLOAD_FOLDER'] = os.path.join(BASE_DIR, 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB limit
 
 # Ensure upload directory exists
@@ -19,8 +22,8 @@ import pandas as pd
 def load_data():
     try:
         # Load Resumes
-        # Columns: ID, Category, Resume
-        resumes_df = pd.read_csv('UpdatedResumeDataSet.csv', sep=';')
+        resumes_path = os.path.join(BASE_DIR, 'UpdatedResumeDataSet.csv')
+        resumes_df = pd.read_csv(resumes_path, sep=';')
         resumes_db = []
         for _, row in resumes_df.iterrows():
             resumes_db.append({
@@ -30,8 +33,8 @@ def load_data():
             })
         
         # Load Jobs
-        # Columns: ID, Company, Job Title, City, Country, Job Description, url, Date
-        jobs_df = pd.read_csv('jobs.csv', sep=';', on_bad_lines='skip', encoding='utf-8')
+        jobs_path = os.path.join(BASE_DIR, 'jobs.csv')
+        jobs_df = pd.read_csv(jobs_path, sep=';', on_bad_lines='skip', encoding='utf-8')
         jobs_db = []
         for _, row in jobs_df.iterrows():
             jobs_db.append({
