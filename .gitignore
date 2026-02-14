@@ -5,3 +5,4 @@ uploads/
 .DS_Store
 .env
 venv/
+jobs.csv
