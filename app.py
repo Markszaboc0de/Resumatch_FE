@@ -5,6 +5,8 @@ from pypdf import PdfReader
 import re
 import math
 from collections import Counter
+from flask_sqlalchemy import SQLAlchemy
+import pandas as pd
 
 # Define base directory
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -12,43 +14,96 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = os.path.join(BASE_DIR, 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB limit
+# Database Configuration
+app.config['SQLALCHEMY_DATABASE_URI'] = "postgresql://neondb_owner:npg_OBP96fcFuQYA@ep-quiet-field-agaxzybz-pooler.c-2.eu-central-1.aws.neon.tech/neondb?sslmode=require"
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+db = SQLAlchemy(app)
 
 # Ensure upload directory exists
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-import pandas as pd
+# --- MODELS ---
+class Job(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(255), nullable=False)
+    description = db.Column(db.Text, nullable=False)
 
-# --- DATABASES FROM CSV ---
-def load_data():
+class Resume(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    category = db.Column(db.String(255), nullable=False)
+    resume_text = db.Column(db.Text, nullable=False)
+
+# --- DATABASE MIGRATION ---
+def populate_jobs(clear=False):
     try:
-        # Load Resumes
-        resumes_path = os.path.join(BASE_DIR, 'UpdatedResumeDataSet.csv')
-        resumes_df = pd.read_csv(resumes_path, sep=';')
-        resumes_db = []
-        for _, row in resumes_df.iterrows():
-            resumes_db.append({
-                "id": row['ID'],
-                "name": row['Category'], # Using Category as name/title substitute
-                "text": str(row['Resume'])
-            })
-        
-        # Load Jobs
-        jobs_path = os.path.join(BASE_DIR, 'jobs.csv')
-        jobs_df = pd.read_csv(jobs_path, sep=';', on_bad_lines='skip', encoding='utf-8')
-        jobs_db = []
-        for _, row in jobs_df.iterrows():
-            jobs_db.append({
-                "id": row['ID'],
-                "title": row['Job Title'],
-                "description": str(row['Job Description'])
-            })
-            
-        return jobs_db, resumes_db
-    except Exception as e:
-        print(f"Error loading CSV data: {e}")
-        return [], []
+        if clear:
+            db.session.query(Job).delete()
+            db.session.commit()
+            print("Cleared Jobs table.")
 
-JOBS_DB, RESUMES_DB = load_data()
+        jobs_path = os.path.join(BASE_DIR, 'jobs.csv')
+        if os.path.exists(jobs_path):
+            print("Loading Jobs from CSV...")
+            jobs_df = pd.read_csv(jobs_path, sep=';', on_bad_lines='skip', encoding='utf-8')
+            jobs_to_add = []
+            for _, row in jobs_df.iterrows():
+                job = Job(
+                    id=row['ID'], 
+                    title=row['Job Title'],
+                    description=str(row['Job Description'])
+                )
+                jobs_to_add.append(job)
+            
+            db.session.add_all(jobs_to_add)
+            db.session.commit()
+            print(f"Loaded {len(jobs_to_add)} jobs.")
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error loading jobs: {e}")
+
+def populate_resumes(clear=False):
+    try:
+        if clear:
+            db.session.query(Resume).delete()
+            db.session.commit()
+            print("Cleared Resumes table.")
+
+        resumes_path = os.path.join(BASE_DIR, 'UpdatedResumeDataSet.csv')
+        if os.path.exists(resumes_path):
+            print("Loading Resumes from CSV...")
+            resumes_df = pd.read_csv(resumes_path, sep=';')
+            resumes_to_add = []
+            for _, row in resumes_df.iterrows():
+                resume = Resume(
+                    category=row['Category'],
+                    resume_text=str(row['Resume'])
+                )
+                resumes_to_add.append(resume)
+            db.session.add_all(resumes_to_add)
+            db.session.commit()
+            print(f"Loaded {len(resumes_to_add)} resumes.")
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error loading resumes: {e}")
+
+def init_db():
+    with app.app_context():
+        db.create_all()
+        
+        # Check if jobs table is empty
+        if Job.query.first() is None:
+            populate_jobs()
+
+        # Check if resumes table is empty
+        if Resume.query.first() is None:
+            populate_resumes()
+
+# Initialize DB (This will run on import, effectively checking/migrating on startup)
+# In production specifically, you might want this in a separate script.
+# For this task, we'll call it before run.
+init_db()
+
 
 # --- TEXT PROCESSING & MATCHING LOGIC ---
 
@@ -121,15 +176,11 @@ def home():
 def listings():
     page = request.args.get('page', 1, type=int)
     per_page = 20
-    total_jobs = len(JOBS_DB)
-    total_pages = math.ceil(total_jobs / per_page)
     
-    start = (page - 1) * per_page
-    end = start + per_page
+    pagination = Job.query.paginate(page=page, per_page=per_page, error_out=False)
+    current_jobs = pagination.items
     
-    current_jobs = JOBS_DB[start:end]
-    
-    return render_template('listings.html', jobs=current_jobs, page=page, total_pages=total_pages)
+    return render_template('listings.html', jobs=current_jobs, page=page, total_pages=pagination.pages, has_next=pagination.has_next, has_prev=pagination.has_prev)
 
 @app.route('/employer', methods=['GET', 'POST'])
 def employer():
@@ -149,10 +200,21 @@ def employer():
             job_desc_text = extract_text_from_txt(filepath)
             
             # Match against Resumes Database
+            # Note: Fetching all resumes into memory might be heavy if DB is huge.
+            # Ideally, we'd do this in the DB, but PostgreSQL Full Text Search or pgvector is better for this.
+            # For now, we fetch all (users said "database got so big", so this might be a bottleneck later,
+            # but for this step we are just moving storage).
+            all_resumes = Resume.query.all()
+            
             scored_resumes = []
-            for resume in RESUMES_DB:
-                score = get_cosine_similarity(job_desc_text, resume['text'])
-                scored_resumes.append(resume | {"score": round(score * 100, 2)}) # Add score to resume dict
+            for resume in all_resumes:
+                score = get_cosine_similarity(job_desc_text, resume.resume_text)
+                scored_resumes.append({
+                    "id": resume.id,
+                    "name": resume.category,
+                    "text": resume.resume_text,
+                    "score": round(score * 100, 2)
+                })
             
             # Sort by score descending
             matches = sorted(scored_resumes, key=lambda x: x['score'], reverse=True)[:3]
@@ -180,10 +242,17 @@ def job_seeker():
             resume_text = extract_text_from_pdf(filepath)
             
             # Match against Jobs Database
+            all_jobs = Job.query.all()
+            
             scored_jobs = []
-            for job in JOBS_DB:
-                score = get_cosine_similarity(resume_text, job['description'])
-                scored_jobs.append(job | {"score": round(score * 100, 2)})
+            for job in all_jobs:
+                score = get_cosine_similarity(resume_text, job.description)
+                scored_jobs.append({
+                    "id": job.id,
+                    "title": job.title,
+                    "description": job.description,
+                    "score": round(score * 100, 2)
+                })
             
             # Sort by score descending
             matches = sorted(scored_jobs, key=lambda x: x['score'], reverse=True)[:3]
@@ -194,3 +263,4 @@ def job_seeker():
 
 if __name__ == '__main__':
     app.run(debug=True)
+
