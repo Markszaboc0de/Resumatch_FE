@@ -43,6 +43,7 @@ def populate_jobs(clear=False):
             print("Cleared Jobs table.")
 
         jobs_path = os.path.join(BASE_DIR, 'jobs.csv')
+        
         if os.path.exists(jobs_path):
             print("Loading Jobs from CSV...")
             jobs_df = pd.read_csv(jobs_path, sep=';', on_bad_lines='skip', encoding='utf-8')
@@ -58,6 +59,9 @@ def populate_jobs(clear=False):
             db.session.add_all(jobs_to_add)
             db.session.commit()
             print(f"Loaded {len(jobs_to_add)} jobs.")
+        else:
+            print("No jobs CSV found.")
+
     except Exception as e:
         db.session.rollback()
         print(f"Error loading jobs: {e}")
@@ -83,6 +87,8 @@ def populate_resumes(clear=False):
             db.session.add_all(resumes_to_add)
             db.session.commit()
             print(f"Loaded {len(resumes_to_add)} resumes.")
+        else:
+            print("No resumes CSV found.")
     except Exception as e:
         db.session.rollback()
         print(f"Error loading resumes: {e}")
@@ -90,14 +96,8 @@ def populate_resumes(clear=False):
 def init_db():
     with app.app_context():
         db.create_all()
-        
-        # Check if jobs table is empty
-        if Job.query.first() is None:
-            populate_jobs()
-
-        # Check if resumes table is empty
-        if Resume.query.first() is None:
-            populate_resumes()
+        # Data population is now handled manually via manage_data.py
+        # to prevent app from trying to read CSVs on deployment
 
 # Initialize DB (This will run on import, effectively checking/migrating on startup)
 # In production specifically, you might want this in a separate script.

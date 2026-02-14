@@ -1,7 +1,6 @@
 __pycache__/
 *.py[cod]
 jobs.csv
-!jobs.csv.gz
 uploads/
 .DS_Store
 .env
