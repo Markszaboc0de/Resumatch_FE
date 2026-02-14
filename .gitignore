@@ -1,8 +1,8 @@
 __pycache__/
 *.py[cod]
-*$py.class
+*$pyjobs.csv
+!jobs.csv.gzlass
 uploads/
 .DS_Store
 .env
 venv/
-jobs.csv
