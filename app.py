@@ -17,6 +17,10 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB limit
 # Database Configuration
 app.config['SQLALCHEMY_DATABASE_URI'] = "postgresql://neondb_owner:npg_OBP96fcFuQYA@ep-quiet-field-agaxzybz-pooler.c-2.eu-central-1.aws.neon.tech/neondb?sslmode=require"
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    "pool_pre_ping": True,
+    "pool_recycle": 300,
+}
 
 db = SQLAlchemy(app)
 
