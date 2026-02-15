@@ -63,6 +63,7 @@ def load_data():
     """
     Loads data from DB, cleans text, and pre-computes TF-IDF matrices.
     Called at startup.
+    Uses yield_per to reduce memory usage during query.
     """
     global DATA_CACHE
     print("Loading data into cache...")
@@ -70,27 +71,34 @@ def load_data():
     with app.app_context():
         # Load Jobs
         try:
-            jobs = Job.query.all()
+            # Use yield_per to stream results (1000 at a time) to avoid loading all into session memory
+            query = Job.query.yield_per(1000)
+            
             job_data = []
             job_texts = []
-            for job in jobs:
+            
+            for job in query:
                 cleaned_desc = clean_text(job.description)
                 job_data.append({
                     "id": job.id,
                     "title": job.title,
                     "description": job.description,
-                    "url": job.url,
-                    "cleaned_text": cleaned_desc
+                    "url": job.url
+                    # Removed cleaned_text to save memory
                 })
                 job_texts.append(cleaned_desc)
             
             DATA_CACHE["jobs"] = job_data
+            
             if job_texts:
                 vectorizer = TfidfVectorizer(preprocessor=None) # Text already cleaned
                 matrix = vectorizer.fit_transform(job_texts)
                 DATA_CACHE["job_vectorizer"] = vectorizer
                 DATA_CACHE["job_matrix"] = matrix
-                print(f"Loaded and vectorized {len(jobs)} jobs.")
+                print(f"Loaded and vectorized {len(job_data)} jobs.")
+                
+                # Free memory immediately
+                del job_texts
             else:
                 print("No jobs found in DB.")
 
@@ -99,26 +107,31 @@ def load_data():
 
         # Load Resumes
         try:
-            resumes = Resume.query.all()
+            query = Resume.query.yield_per(1000)
             resume_data = []
             resume_texts = []
-            for resume in resumes:
+            
+            for resume in query:
                 cleaned_text = clean_text(resume.resume_text)
                 resume_data.append({
                     "id": resume.id,
                     "category": resume.category,
-                    "text": resume.resume_text,
-                    "cleaned_text": cleaned_text
+                    "text": resume.resume_text
+                    # Removed cleaned_text
                 })
                 resume_texts.append(cleaned_text)
             
             DATA_CACHE["resumes"] = resume_data
+            
             if resume_texts:
                 vectorizer = TfidfVectorizer(preprocessor=None)
                 matrix = vectorizer.fit_transform(resume_texts)
                 DATA_CACHE["resume_vectorizer"] = vectorizer
                 DATA_CACHE["resume_matrix"] = matrix
-                print(f"Loaded and vectorized {len(resumes)} resumes.")
+                print(f"Loaded and vectorized {len(resume_data)} resumes.")
+                
+                # Free memory
+                del resume_texts
             else:
                 print("No resumes found in DB.")
 
