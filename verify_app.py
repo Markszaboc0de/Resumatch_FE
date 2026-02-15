@@ -1,6 +1,6 @@
 import os
 import unittest
-from app import app, clean_text, get_cosine_similarity
+from app import app, clean_text
 from io import BytesIO
 
 class TestResumeMatcher(unittest.TestCase):
@@ -9,19 +9,12 @@ class TestResumeMatcher(unittest.TestCase):
         self.app.testing = True
 
     def test_clean_text(self):
-        text = "Hello! This is a TEST."
+        text = "Hello! This is a TEST with <html> tags."
         cleaned = clean_text(text)
-        self.assertEqual(cleaned, ['hello', 'this', 'test'])
+        expected = "hello this is a test with tags"
+        self.assertEqual(cleaned, expected)
 
-    def test_cosine_similarity(self):
-        text1 = "Python developer with Flask"
-        text2 = "Flask developer using Python"
-        score = get_cosine_similarity(text1, text2)
-        self.assertGreater(score, 0.8) # Should be high match
-
-        text3 = "Chef cooking food"
-        score_low = get_cosine_similarity(text1, text3)
-        self.assertLess(score_low, 0.2) # Should be low match
+    # test_cosine_similarity removed as the function was integrated into routes via sklearn
 
     def test_home_route(self):
         response = self.app.get('/')

@@ -32,11 +32,98 @@ class Job(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(255), nullable=False)
     description = db.Column(db.Text, nullable=False)
+    url = db.Column(db.Text, nullable=True) # Added URL column
 
 class Resume(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     category = db.Column(db.String(255), nullable=False)
     resume_text = db.Column(db.Text, nullable=False)
+
+# --- GLOBAL DATA CACHE ---
+# This cache will hold data in memory to avoid repeated DB fetches and vectorization
+# Structure:
+# {
+#   "jobs": [{"id": 1, "title": "...", "description": "...", "url": "..."}, ...],
+#   "resumes": [{"id": 1, "category": "...", "text": "..."}, ...],
+#   "job_vectorizer": TfidfVectorizer object (fitted on jobs),
+#   "resume_vectorizer": TfidfVectorizer object (fitted on resumes),
+#   "job_matrix": scipy sparse matrix (fitted on jobs),
+#   "resume_matrix": scipy sparse matrix (fitted on resumes)
+# }
+DATA_CACHE = {
+    "jobs": [],
+    "resumes": [],
+    "job_vectorizer": None,
+    "resume_vectorizer": None,
+    "job_matrix": None,
+    "resume_matrix": None
+}
+
+def load_data():
+    """
+    Loads data from DB, cleans text, and pre-computes TF-IDF matrices.
+    Called at startup.
+    """
+    global DATA_CACHE
+    print("Loading data into cache...")
+    
+    with app.app_context():
+        # Load Jobs
+        try:
+            jobs = Job.query.all()
+            job_data = []
+            job_texts = []
+            for job in jobs:
+                cleaned_desc = clean_text(job.description)
+                job_data.append({
+                    "id": job.id,
+                    "title": job.title,
+                    "description": job.description,
+                    "url": job.url,
+                    "cleaned_text": cleaned_desc
+                })
+                job_texts.append(cleaned_desc)
+            
+            DATA_CACHE["jobs"] = job_data
+            if job_texts:
+                vectorizer = TfidfVectorizer(preprocessor=None) # Text already cleaned
+                matrix = vectorizer.fit_transform(job_texts)
+                DATA_CACHE["job_vectorizer"] = vectorizer
+                DATA_CACHE["job_matrix"] = matrix
+                print(f"Loaded and vectorized {len(jobs)} jobs.")
+            else:
+                print("No jobs found in DB.")
+
+        except Exception as e:
+            print(f"Error loading jobs: {e}")
+
+        # Load Resumes
+        try:
+            resumes = Resume.query.all()
+            resume_data = []
+            resume_texts = []
+            for resume in resumes:
+                cleaned_text = clean_text(resume.resume_text)
+                resume_data.append({
+                    "id": resume.id,
+                    "category": resume.category,
+                    "text": resume.resume_text,
+                    "cleaned_text": cleaned_text
+                })
+                resume_texts.append(cleaned_text)
+            
+            DATA_CACHE["resumes"] = resume_data
+            if resume_texts:
+                vectorizer = TfidfVectorizer(preprocessor=None)
+                matrix = vectorizer.fit_transform(resume_texts)
+                DATA_CACHE["resume_vectorizer"] = vectorizer
+                DATA_CACHE["resume_matrix"] = matrix
+                print(f"Loaded and vectorized {len(resumes)} resumes.")
+            else:
+                print("No resumes found in DB.")
+
+        except Exception as e:
+            print(f"Error loading resumes: {e}")
 
 # --- DATABASE MIGRATION ---
 def populate_jobs(clear=False):
@@ -50,19 +137,27 @@ def populate_jobs(clear=False):
         
         if os.path.exists(jobs_path):
             print("Loading Jobs from CSV...")
+            # CSV Header: ID;Company;Job Title;City;Country;Job Description;URL;Date
             jobs_df = pd.read_csv(jobs_path, sep=';', on_bad_lines='skip', encoding='utf-8')
             jobs_to_add = []
             for _, row in jobs_df.iterrows():
+                # Handle potentially missing URL
+                url = row['URL'] if 'URL' in row else None
+                if pd.isna(url): url = None
+
                 job = Job(
                     id=row['ID'], 
                     title=row['Job Title'],
-                    description=str(row['Job Description'])
+                    description=str(row['Job Description']),
+                    url=str(url) if url else None
                 )
                 jobs_to_add.append(job)
             
             db.session.add_all(jobs_to_add)
             db.session.commit()
             print(f"Loaded {len(jobs_to_add)} jobs.")
+            # Reload cache after population
+            load_data()
         else:
             print("No jobs CSV found.")
 
@@ -91,6 +186,8 @@ def populate_resumes(clear=False):
             db.session.add_all(resumes_to_add)
             db.session.commit()
             print(f"Loaded {len(resumes_to_add)} resumes.")
+            # Reload cache after population
+            load_data()
         else:
             print("No resumes CSV found.")
     except Exception as e:
@@ -111,39 +208,31 @@ init_db()
 
 # --- TEXT PROCESSING & MATCHING LOGIC ---
 
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+# ... (Previous code remains the same until clean_text) ...
+
+# --- TEXT PROCESSING & MATCHING LOGIC ---
+
 def clean_text(text):
     """
-    Tokenizes and cleans text: removes non-alphanumeric characters, converts to lower case,
-    and removes common stopwords.
-    Returns a list of words.
+    Robust text cleaning:
+    - Removes HTML tags
+    - Removes URLs
+    - Removes non-alphabetic characters
+    - Normalizes whitespace
+    - Converts to lowercase
     """
-    STOPWORDS = {
-        'and', 'the', 'is', 'in', 'at', 'of', 'a', 'with', 'using', 'for', 'to', 'an', 'or', 'by', 'on'
-    }
-    text = re.sub(r'[^a-zA-Z0-9\s]', '', text)
-    tokens = text.lower().split()
-    return [word for word in tokens if word not in STOPWORDS]
-
-def get_cosine_similarity(text1, text2):
-    """
-    Calculates Cosine Similarity between two text strings.
-    """
-    tokens1 = clean_text(text1)
-    tokens2 = clean_text(text2)
-
-    vec1 = Counter(tokens1)
-    vec2 = Counter(tokens2)
-
-    intersection = set(vec1.keys()) & set(vec2.keys())
-    numerator = sum([vec1[x] * vec2[x] for x in intersection])
-
-    sum1 = sum([vec1[x]**2 for x in vec1.keys()])
-    sum2 = sum([vec2[x]**2 for x in vec2.keys()])
-    denominator = math.sqrt(sum1) * math.sqrt(sum2)
-
-    if not denominator:
-        return 0.0
-    return numerator / denominator
+    # Remove HTML tags
+    text = re.sub(r'<[^>]+>', ' ', text)
+    # Remove URLs
+    text = re.sub(r'http\S+|www\S+|https\S+', ' ', text, flags=re.MULTILINE)
+    # Remove non-alphabetic characters (keep spaces)
+    text = re.sub(r'[^a-zA-Z\s]', '', text)
+    # Remove extra whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text.lower()
 
 def extract_text_from_pdf(filepath):
     """
@@ -181,6 +270,7 @@ def listings():
     page = request.args.get('page', 1, type=int)
     per_page = 20
     
+    # We can still use DB pagination for listings as it handles limit/offset efficiently
     pagination = Job.query.paginate(page=page, per_page=per_page, error_out=False)
     current_jobs = pagination.items
     
@@ -202,28 +292,41 @@ def employer():
             file.save(filepath)
             
             job_desc_text = extract_text_from_txt(filepath)
+            cleaned_job_desc = clean_text(job_desc_text)
             
-            # Match against Resumes Database
-            # Note: Fetching all resumes into memory might be heavy if DB is huge.
-            # Ideally, we'd do this in the DB, but PostgreSQL Full Text Search or pgvector is better for this.
-            # For now, we fetch all (users said "database got so big", so this might be a bottleneck later,
-            # but for this step we are just moving storage).
-            all_resumes = Resume.query.all()
+            # Use Cached Data
+            if not DATA_CACHE["resume_vectorizer"] or DATA_CACHE["resume_matrix"] is None:
+                 # Fallback or reload if cache empty (though load_data called at startup)
+                 load_data()
+            
+            if not DATA_CACHE["resumes"]:
+                os.remove(filepath)
+                return render_template('employer.html', matches=[])
+
+            vectorizer = DATA_CACHE["resume_vectorizer"]
+            # Transform the single new document
+            job_vector = vectorizer.transform([cleaned_job_desc])
+            
+            # Calculate Similarity against cached matrix
+            cosine_sim = cosine_similarity(job_vector, DATA_CACHE["resume_matrix"]).flatten()
             
             scored_resumes = []
-            for resume in all_resumes:
-                score = get_cosine_similarity(job_desc_text, resume.resume_text)
-                scored_resumes.append({
-                    "id": resume.id,
-                    "name": resume.category,
-                    "text": resume.resume_text,
-                    "score": round(score * 100, 2)
-                })
+            resumes = DATA_CACHE["resumes"]
             
-            # Sort by score descending
+            # Optimize: Get top k indices instead of iterating all if N is huge
+            # But Python loop is fast enough for <10k. 
+            # For strict speedup, use numpy argsort but let's stick to logic for now.
+            
+            for i, score in enumerate(cosine_sim):
+                if score > 0: 
+                    scored_resumes.append({
+                        "id": resumes[i]["id"],
+                        "name": resumes[i]["category"],
+                        "text": resumes[i]["text"][:200] + "...", 
+                        "score": round(score * 100, 2)
+                    })
+            
             matches = sorted(scored_resumes, key=lambda x: x['score'], reverse=True)[:3]
-            
-            # Simple cleanup of uploaded file
             os.remove(filepath)
             
     return render_template('employer.html', matches=matches)
@@ -244,28 +347,41 @@ def job_seeker():
             file.save(filepath)
             
             resume_text = extract_text_from_pdf(filepath)
+            cleaned_resume = clean_text(resume_text)
             
-            # Match against Jobs Database
-            all_jobs = Job.query.all()
+            # Use Cached Data
+            if not DATA_CACHE["job_vectorizer"] or DATA_CACHE["job_matrix"] is None:
+                load_data()
+            
+            if not DATA_CACHE["jobs"]:
+                os.remove(filepath)
+                return render_template('job_seeker.html', matches=[])
+            
+            vectorizer = DATA_CACHE["job_vectorizer"]
+            resume_vector = vectorizer.transform([cleaned_resume])
+            
+            cosine_sim = cosine_similarity(resume_vector, DATA_CACHE["job_matrix"]).flatten()
             
             scored_jobs = []
-            for job in all_jobs:
-                score = get_cosine_similarity(resume_text, job.description)
-                scored_jobs.append({
-                    "id": job.id,
-                    "title": job.title,
-                    "description": job.description,
-                    "score": round(score * 100, 2)
-                })
+            jobs = DATA_CACHE["jobs"]
             
-            # Sort by score descending
+            for i, score in enumerate(cosine_sim):
+                 if score > 0:
+                    scored_jobs.append({
+                        "id": jobs[i]["id"],
+                        "title": jobs[i]["title"],
+                        "description": jobs[i]["description"][:200] + "...",
+                        "url": jobs[i]["url"], # Include URL
+                        "score": round(score * 100, 2)
+                    })
+            
             matches = sorted(scored_jobs, key=lambda x: x['score'], reverse=True)[:3]
-            
             os.remove(filepath)
 
     return render_template('job_seeker.html', matches=matches)
 
 if __name__ == '__main__':
+    # Load data at startup
+    load_data()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
-

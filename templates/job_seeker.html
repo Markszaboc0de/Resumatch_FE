@@ -43,7 +43,7 @@
                         <th>Job ID</th>
                         <th>Job Title</th>
                         <th>Match Score</th>
-                        <th>Description</th>
+                        <th>Link</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -53,7 +53,7 @@
                         <td>{{ job.id }}</td>
                         <td>{{ job.title }}</td>
                         <td>{{ job.score }}%</td>
-                        <td>{{ job.description[:100] }}...</td>
+                        <td><a href="{{ job.url }}" target="_blank" class="btn btn-primary btn-sm">View Job</a></td>
                     </tr>
                     {% endfor %}
                 </tbody>
